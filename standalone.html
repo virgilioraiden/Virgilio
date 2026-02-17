@@ -1,0 +1,838 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Flipping Master IA ReModela</title>
+    
+    <!-- 1. Estilos (Tailwind CSS) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        @media print {
+            body, html { height: auto; overflow: visible; }
+        }
+    </style>
+
+    <!-- 2. Import Map para librerías externas -->
+    <script type="importmap">
+    {
+      "imports": {
+        "react": "https://esm.sh/react@18.2.0",
+        "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
+        "react-markdown": "https://esm.sh/react-markdown@9.0.1",
+        "@google/genai": "https://esm.sh/@google/genai@0.1.1",
+        "lucide-react": "https://esm.sh/lucide-react@0.292.0"
+      }
+    }
+    </script>
+
+    <!-- 3. Babel para traducir React/JSX en el navegador -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50 text-slate-900">
+    <div id="root"></div>
+
+    <!-- 4. Lógica de la Aplicación -->
+    <script type="text/babel" data-type="module">
+        import React, { useState, useEffect } from 'react';
+        import ReactDOM from 'react-dom/client';
+        import ReactMarkdown from 'react-markdown';
+        import { GoogleGenAI } from '@google/genai';
+        import { 
+            Home, Map, Camera, CheckCircle, ClipboardList, Hammer, 
+            Image as ImageIcon, Loader2, ChevronRight, Plus, Trash2, 
+            FileText, Download, AlertTriangle, ArrowLeft 
+        } from 'lucide-react';
+
+        // ==========================================
+        // CONFIGURACIÓN
+        // ==========================================
+        
+        const API_KEY = "AIzaSyCieXQdrLWpNJ5tcuFuqNYh309kGVIhR4I"; 
+
+        // ==========================================
+        // CONSTANTES Y UTILIDADES
+        // ==========================================
+        const ICONS = {
+            Home, Map, Camera, CheckCircle, ClipboardList, Hammer,
+            Image: ImageIcon, Loader: Loader2, ChevronRight, Plus,
+            Trash: Trash2, FileText, Download, Alert: AlertTriangle, ArrowLeft
+        };
+
+        const MODEL_FAST = 'gemini-2.5-flash'; 
+        // Usamos Flash para el standalone para asegurar velocidad y menos errores de quota en demo
+        const MODEL_REASONING = 'gemini-2.5-flash'; 
+        const MODEL_IMAGE = 'gemini-2.5-flash-image';
+
+        // Inicializar AI
+        let aiClient = null;
+        try {
+            if (API_KEY) {
+                aiClient = new GoogleGenAI({ apiKey: API_KEY });
+            }
+        } catch (e) {
+            console.error("Error iniciando AI", e);
+        }
+
+        // ==========================================
+        // SERVICIOS (GEMINI)
+        // ==========================================
+        
+        const diagnoseRoom = async (room, property) => {
+            if (!aiClient) return { analysis: "Error: API Key no configurada.", suggestions: [], structuredAnalysis: {} };
+
+            // 1. Lógica para detectar exteriores
+            const isOutdoor = /patio|jardin|jardín|terraza|balcon|balcón|fondo|parque/i.test(room.name);
+            
+            let outdoorContext = "";
+            if (isOutdoor) {
+                outdoorContext = `
+                ATENCIÓN: ESTE ES UN ESPACIO EXTERIOR/DESCUBIERTO O SEMICUBIERTO.
+                - NO hables de yeso, durlock interior o pisos flotantes.
+                - SI detectas césped/tierra: evalúa paisajismo, nivelación, riego.
+                - SI detectas piscina: evalúa estado de venecitas, bordes atérmicos, equipo de filtrado.
+                - SI detectas muros perimetrales: evalúa revoque exterior, impermeabilización, enredaderas.
+                - SI detectas pisos: sugiere solados aptos exterior (porcellanato antideslizante, losetas atérmicas, deck).
+                `;
+            }
+
+            const dimensionsInfo = room.isIrregular 
+                ? `Superficie irregular: ${room.area} m²`
+                : `Medidas: ${room.length}m x ${room.width}m (Superficie: ${room.area} m²)`;
+
+            const listingInfo = property.listingDescription 
+                ? `INFORMACIÓN DEL AVISO: "${property.listingDescription}". (Úsalo para validar estado).` 
+                : "";
+
+            const prompt = `
+            Analiza este ambiente: "${room.name}".
+            Propiedad: ${property.type} en ${property.city}. 
+            Antigüedad: ${property.age} años.
+            Superficies Propiedad: Cubierta ${property.areaCovered}m2, Semi ${property.areaSemi}m2, Libre ${property.areaOpen}m2.
+            
+            NIVEL DE REMODELACIÓN: "${property.renovationLevel}".
+            Dimensiones: ${dimensionsInfo}.
+            Notas usuario: "${room.description}".
+            
+            ${outdoorContext}
+            ${listingInfo}
+            
+            TAREA (Responde JSON):
+            1. Analiza imágenes buscando patologías constructivas y potencial.
+            2. Genera JSON:
+            {
+                "structuredAnalysis": {
+                "generalState": "Resumen técnico del estado actual.",
+                "pathologies": "Lista de patologías (humedad, grietas, revestimientos obsoletos).",
+                "ageSuggestionElectric": "Si >50 años y es interior: texto sugerencia recambio. Si es exterior: sugerencia iluminación led estanca.",
+                "ageSuggestionPlumbing": "Si >50 años (baño/cocina/piscina): texto sugerencia recambio.",
+                "interventions": [
+                    {
+                    "id": "1",
+                    "task": "Título intervención (Ej: 'Colocación Deck WPC' o 'Recambio Solado')",
+                    "materials": "Materiales sugeridos (Marca/Tipo)",
+                    "roiJustification": "Impacto valor (Alto/Medio/Bajo)"
+                    }
+                ]
+                }
+            }`;
+
+            const parts = [];
+            // Imagen contexto aviso (opcional)
+            if (property.listingImage) {
+                const base64 = property.listingImage.data.split(',')[1] || property.listingImage.data;
+                parts.push({ inlineData: { mimeType: property.listingImage.mimeType, data: base64 }});
+                parts.push({ text: "REFERENCIA COMERCIAL: Aviso." });
+            }
+            // Imágenes del ambiente
+            if (room.images && room.images.length > 0) {
+                room.images.forEach(img => {
+                    const base64 = img.data.split(',')[1] || img.data;
+                    parts.push({ inlineData: { mimeType: img.mimeType, data: base64 }});
+                });
+            }
+            parts.push({ text: prompt });
+
+            try {
+                const response = await aiClient.models.generateContent({
+                    model: MODEL_FAST,
+                    contents: { parts },
+                    config: { responseMimeType: "application/json" }
+                });
+                const text = response.text() || "{}";
+                const json = JSON.parse(text);
+                return {
+                    analysis: json.structuredAnalysis?.generalState || "Análisis completado.",
+                    suggestions: [],
+                    structuredAnalysis: json.structuredAnalysis
+                };
+            } catch (e) {
+                console.error("Error diagnóstico", e);
+                return { analysis: "Error al interpretar.", suggestions: [], structuredAnalysis: { interventions: [] }};
+            }
+        };
+
+        const generateTechnicalPlan = async (rooms, property, globalDecisions) => {
+            if (!aiClient) return "Error: API Key faltante.";
+            
+            // 1. Contexto de Ambientes
+            let roomsContext = "";
+            rooms.forEach((r, idx) => {
+                let approved = "";
+                if (r.diagnosis?.structuredAnalysis?.interventions) {
+                    r.diagnosis.structuredAnalysis.interventions.forEach(item => {
+                        const decision = r.decisions[item.id];
+                        if (decision?.status === 'approved') approved += `- ${item.task}. Materiales: ${item.materials}.\n`;
+                        else if (decision?.status === 'modified') approved += `- ${decision.modificationNote} (En lugar de: ${item.task}).\n`;
+                    });
+                }
+                roomsContext += `\nAMBIENTE ${idx + 1}: ${r.name}\nTAREAS APROBADAS:\n${approved || "Sin cambios."}\nNOTAS: ${r.userNotes}\n`;
+            });
+
+            // 2. Contexto Global
+            let globalContext = "";
+            if (globalDecisions.electricity === 'approved') globalContext += "- INSTALACIÓN ELÉCTRICA: Recambio total norma AEA.\n";
+            if (globalDecisions.plumbing === 'approved') globalContext += "- INSTALACIÓN SANITARIA: Recambio total termofusión.\n";
+
+            // 3. Prompt de Comparación de Planos
+            let floorPlanInstruction = "No se adjuntaron planos para comparar.";
+            const parts = [];
+
+            if (property.floorPlanCurrent) {
+                const base64Curr = property.floorPlanCurrent.data.split(',')[1] || property.floorPlanCurrent.data;
+                parts.push({ inlineData: { mimeType: property.floorPlanCurrent.mimeType, data: base64Curr }});
+                parts.push({ text: "IMAGEN 1: PLANO ESTADO ACTUAL" });
+            }
+            
+            if (property.floorPlanRemodel) {
+                const base64Rem = property.floorPlanRemodel.data.split(',')[1] || property.floorPlanRemodel.data;
+                parts.push({ inlineData: { mimeType: property.floorPlanRemodel.mimeType, data: base64Rem }});
+                parts.push({ text: "IMAGEN 2: PLANO DE PROYECTO/REFORMA" });
+            }
+
+            if (property.floorPlanCurrent && property.floorPlanRemodel) {
+                floorPlanInstruction = `
+                TAREA CRÍTICA DE COMPARACIÓN:
+                Tienes dos planos (Actual vs Proyecto). Compáralos visualmente.
+                Identifica cambios estructurales:
+                - Muros que desaparecen = DEMOLICIÓN.
+                - Muros que aparecen = MAMPOSTERÍA NUEVA / TABIQUERÍA.
+                - Cambios de función (ej: Cocina se mueve de lugar) = INSTALACIONES NUEVAS.
+                
+                En la sección "Alcance General", detalla específicamente estas modificaciones estructurales detectadas.
+                `;
+            } else if (property.floorPlanCurrent) {
+                floorPlanInstruction = "Solo tienes el plano actual. Úsalo para entender la distribución.";
+            }
+
+            const promptText = `
+            Genera INFORME TÉCNICO DE OBRA (Formato Jefe de Obra Argentina).
+            
+            PROPIEDAD:
+            - Ubicación: ${property.address || property.city}
+            - Tipo: ${property.type}
+            - Antigüedad: ${property.age} años
+            - Superficies: Cubierta ${property.areaCovered}m2, Semi ${property.areaSemi}m2, Libre ${property.areaOpen}m2 (Total ${property.areaTotal}m2).
+            - Nivel Reforma: ${property.renovationLevel}
+
+            ANÁLISIS DE PLANOS:
+            ${floorPlanInstruction}
+            
+            DECISIONES GLOBALES:
+            ${globalContext}
+
+            DETALLE POR AMBIENTES:
+            ${roomsContext}
+            
+            ESTRUCTURA DEL REPORTE:
+            # INFORME TÉCNICO DE OBRA
+            ## 1. Portada Técnica (Incluir desglose de superficies)
+            ## 2. Alcance General (Incluir aquí el análisis de demoliciones/obra nueva detectado en los planos)
+            ## 3. Instalaciones Generales
+            ## 4. Listado Técnico por Ambiente (Agrupar tareas exteriores en "Exteriores y Paisajismo")
+            ## 5. Listado Técnico por Gremio
+            ## 6. Tareas Generales
+            ## 7. Lista Global de Materiales
+            ## 8. Cronograma Estimado (Secuencia lógica)
+
+            ESTILO: Técnico, directo, profesional.
+            `;
+
+            parts.push({ text: promptText });
+
+            try {
+                const response = await aiClient.models.generateContent({
+                    model: MODEL_REASONING, 
+                    contents: { parts }
+                });
+                return response.text() || "Error generando informe.";
+            } catch (error) {
+                console.error(error);
+                return "Error generando informe (revisar consola).";
+            }
+        };
+
+        const generateRoomRender = async (room, imageIndex = 0) => {
+            if (!aiClient || !room.images || room.images.length <= imageIndex) return null;
+            
+            const refImg = room.images[imageIndex];
+            const base64 = refImg.data.split(',')[1] || refImg.data;
+            
+            // Contexto exterior para renders
+            const isOutdoor = /patio|jardin|jardín|terraza|balcon|balcón|fondo|parque/i.test(room.name);
+            let styleContext = "Estilo moderno argentino interior.";
+            if (isOutdoor) styleContext = "Estilo paisajismo moderno. Si es jardín: vegetación cuidada, iluminación escenográfica. Si es terraza/balcón: mobiliario exterior, decks, macetas.";
+
+            let instructions = "";
+            if (room.diagnosis?.structuredAnalysis?.interventions) {
+                room.diagnosis.structuredAnalysis.interventions.forEach(item => {
+                    const dec = room.decisions[item.id];
+                    if (dec?.status === 'approved') instructions += `Aplicar: ${item.task} (${item.materials}). `;
+                    else if (dec?.status === 'modified') instructions += `Aplicar: ${dec.modificationNote}. `;
+                });
+            }
+            instructions += ` ${room.userNotes}`;
+
+            const prompt = `Visualizador arquitectónico. INPUT: Imagen real. INSTRUCCIONES: "${instructions}". TAREA: Genera imagen fotorrealista 'Después'. CONSERVA LA ESTRUCTURA EXACTA. ${styleContext}`;
+
+            try {
+                const response = await aiClient.models.generateContent({
+                    model: MODEL_IMAGE,
+                    contents: { parts: [{ inlineData: { mimeType: refImg.mimeType, data: base64 } }, { text: prompt }] }
+                });
+                 if (response.candidates && response.candidates[0].content.parts) {
+                    for (const part of response.candidates[0].content.parts) {
+                        if (part.inlineData) {
+                        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                        }
+                    }
+                }
+                return null;
+            } catch (e) {
+                console.error("Render error", e);
+                return null;
+            }
+        };
+
+
+        // ==========================================
+        // COMPONENTES (UI)
+        // ==========================================
+
+        const BrandLogo = () => (
+            <svg viewBox="0 0 100 120" fill="none" className="w-full h-full">
+                <path d="M50 115C50 115 90 95 90 30V10H10V30C10 95 50 115 50 115Z" fill="#8C2C39" />
+                <path d="M30 40H75L70 55H30V40Z" fill="white" />
+                <path d="M30 65H60L55 80H30V65Z" fill="white" />
+                <path d="M30 55L35 40V80L30 65V55Z" fill="black" fillOpacity="0.2" />
+            </svg>
+        );
+
+        const Onboarding = ({ onComplete, onFastForward }) => {
+            const [data, setData] = useState({ 
+                city: '', address: '', type: 'Departamento', 
+                areaCovered: '', areaSemi: '', areaOpen: '', 
+                age: '40', renovationLevel: 'Standard' 
+            });
+            
+            const totalArea = Number(data.areaCovered || 0) + Number(data.areaSemi || 0) + Number(data.areaOpen || 0);
+
+            return (
+                <div className="max-w-md mx-auto bg-white rounded-xl shadow-lg p-8 my-10">
+                    <div className="text-center mb-6">
+                        <div className="flex justify-center mb-4"><div className="w-20 h-20"><BrandLogo /></div></div>
+                        <h1 className="text-2xl font-bold text-slate-800">Datos de la Propiedad</h1>
+                    </div>
+                    <form onSubmit={(e) => { e.preventDefault(); onComplete({...data, areaTotal: totalArea}); }} className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Ciudad / Barrio</label>
+                            <input required className="w-full px-4 py-2 border rounded-lg" value={data.city} onChange={e=>setData({...data, city: e.target.value})} placeholder="Ej: Palermo, CABA" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Dirección</label>
+                            <input className="w-full px-4 py-2 border rounded-lg" value={data.address} onChange={e=>setData({...data, address: e.target.value})} placeholder="Ej: Av. Santa Fe 1234" />
+                        </div>
+                         <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700">Tipo</label>
+                                <select className="w-full px-4 py-2 border rounded-lg" value={data.type} onChange={e=>setData({...data, type: e.target.value})}>
+                                    <option>Departamento</option><option>Casa</option><option>PH</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-slate-700">Nivel Reforma</label>
+                                <select className="w-full px-4 py-2 border rounded-lg" value={data.renovationLevel} onChange={e=>setData({...data, renovationLevel: e.target.value})}>
+                                    <option>Habitabilidad</option><option>Standard</option><option>Standard Plus</option><option>Top</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        {/* Superficies Desglosadas */}
+                        <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                            <label className="block text-sm font-bold text-slate-700 mb-2">Superficies (m²)</label>
+                            <div className="grid grid-cols-3 gap-2">
+                                <div>
+                                    <label className="text-xs text-slate-500">Cubierta</label>
+                                    <input required type="number" className="w-full px-2 py-1 border rounded" value={data.areaCovered} onChange={e=>setData({...data, areaCovered: e.target.value})} placeholder="0" />
+                                </div>
+                                <div>
+                                    <label className="text-xs text-slate-500">Semi</label>
+                                    <input type="number" className="w-full px-2 py-1 border rounded" value={data.areaSemi} onChange={e=>setData({...data, areaSemi: e.target.value})} placeholder="0" />
+                                </div>
+                                <div>
+                                    <label className="text-xs text-slate-500">Descubierta</label>
+                                    <input type="number" className="w-full px-2 py-1 border rounded" value={data.areaOpen} onChange={e=>setData({...data, areaOpen: e.target.value})} placeholder="0" />
+                                </div>
+                            </div>
+                            <div className="text-right text-xs font-bold text-[#8C2C39] mt-2">
+                                Total: {totalArea} m²
+                            </div>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700">Antigüedad (años)</label>
+                            <input required type="number" className="w-full px-4 py-2 border rounded-lg" value={data.age} onChange={e=>setData({...data, age: e.target.value})} />
+                        </div>
+
+                        <button type="submit" className="w-full mt-6 bg-[#8C2C39] text-white py-3 rounded-lg font-medium hover:bg-[#70232e]">Siguiente paso</button>
+                        <button type="button" onClick={onFastForward} className="w-full py-2 text-xs text-slate-400 font-medium hover:text-slate-600 border-t mt-4 pt-4">⚡ Modo Demo (Saltear carga)</button>
+                    </form>
+                     <div className="mt-8 pt-6 border-t border-slate-200 text-[10px] text-slate-500 text-center">
+                        © {new Date().getFullYear()} Flipping Master.
+                    </div>
+                </div>
+            );
+        };
+
+        const FloorPlanSelector = ({ onComplete }) => {
+            const [planCurr, setPlanCurr] = useState(null);
+            const [planRem, setPlanRem] = useState(null);
+            const [desc, setDesc] = useState('');
+            
+            const handleFile = async (e, setFn) => {
+                const file = e.target.files[0];
+                if(file) {
+                    const reader = new FileReader();
+                    reader.onload = ev => setFn({ data: ev.target.result, mimeType: file.type });
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            return (
+                <div className="max-w-4xl mx-auto mt-6 space-y-6">
+                    <div className="text-center">
+                        <h2 className="text-3xl font-bold">Planos y Contexto</h2>
+                        <p className="text-slate-500">Sube ambos planos para que la IA detecte demoliciones y obras nuevas.</p>
+                    </div>
+                    
+                    <div className="grid md:grid-cols-2 gap-6">
+                        {/* Planos */}
+                        <div className="space-y-4">
+                            <div className="bg-white p-4 rounded shadow border border-slate-200">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <ICONS.Map className="w-5 h-5 text-slate-500" />
+                                    <h3 className="font-bold text-sm">A. Plano Estado Actual</h3>
+                                </div>
+                                <input type="file" onChange={e => handleFile(e, setPlanCurr)} className="block w-full text-xs text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-slate-200" />
+                                {planCurr && <p className="text-xs text-green-600 mt-1 font-bold">✓ Cargado</p>}
+                            </div>
+
+                            <div className="bg-white p-4 rounded shadow border border-slate-200 relative overflow-hidden">
+                                <div className="absolute top-0 right-0 bg-[#8C2C39] text-white text-[10px] px-2 py-1 font-bold rounded-bl">RECOMENDADO</div>
+                                <div className="flex items-center gap-2 mb-2">
+                                    <ICONS.Hammer className="w-5 h-5 text-[#8C2C39]" />
+                                    <h3 className="font-bold text-sm text-[#8C2C39]">B. Plano Proyecto / Reforma</h3>
+                                </div>
+                                <p className="text-xs text-slate-500 mb-2">Si lo subes, la IA comparará ambos para listar demoliciones.</p>
+                                <input type="file" onChange={e => handleFile(e, setPlanRem)} className="block w-full text-xs text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded file:border-0 file:bg-[#8C2C39] file:text-white" />
+                                {planRem && <p className="text-xs text-green-600 mt-1 font-bold">✓ Cargado</p>}
+                            </div>
+                        </div>
+
+                        {/* Descripción */}
+                        <div className="bg-white p-6 rounded shadow border">
+                            <h3 className="font-bold mb-4">Información del Aviso (Opcional)</h3>
+                            <textarea className="w-full h-40 border p-2 rounded text-sm" placeholder="Pega aquí la descripción del portal inmobiliario (ej: 'Muy luminoso, a reciclar, jardín al fondo...')" value={desc} onChange={e => setDesc(e.target.value)}></textarea>
+                        </div>
+                    </div>
+                    
+                    <div className="flex justify-end pt-4">
+                        <button onClick={() => onComplete({ floorPlanCurrent: planCurr, floorPlanRemodel: planRem, listingDescription: desc })} className="bg-[#8C2C39] text-white px-8 py-3 rounded font-bold shadow hover:bg-[#70232e]">Continuar</button>
+                    </div>
+                </div>
+            );
+        };
+
+        const RoomManager = ({ rooms, setRooms, onNext }) => {
+            const [name, setName] = useState('');
+            const [l, setL] = useState('');
+            const [w, setW] = useState('');
+            const [area, setArea] = useState('');
+            const [desc, setDesc] = useState('');
+            const [isOutdoor, setIsOutdoor] = useState(false);
+            
+            // Auto-detectar outdoor por nombre
+            useEffect(() => {
+                const outdoorRegex = /patio|jardin|jardín|terraza|balcon|balcón|fondo|parque/i;
+                setIsOutdoor(outdoorRegex.test(name));
+            }, [name]);
+
+            useEffect(() => { if(l && w) setArea((l*w).toFixed(2)); }, [l, w]);
+
+            const addRoom = () => {
+                setRooms([...rooms, {
+                    id: crypto.randomUUID(), name, description: desc, images: [], diagnosis: null, decisions: {}, tasks: null, userNotes: '', generatedImages: [], isAnalyzing: false, isRendering: [], length: l, width: w, area: area || '0', isIrregular: false
+                }]);
+                setName(''); setL(''); setW(''); setArea(''); setDesc('');
+            };
+
+             const handleFiles = async (e, roomId) => {
+                const files = e.target.files;
+                if(!files) return;
+                const newImgs = [];
+                for(let i=0; i<files.length; i++) {
+                     const reader = new FileReader();
+                     const p = new Promise(resolve => {
+                         reader.onload = ev => resolve({ data: ev.target.result, mimeType: files[i].type });
+                     });
+                     reader.readAsDataURL(files[i]);
+                     newImgs.push(await p);
+                }
+                setRooms(prev => prev.map(r => r.id === roomId ? {...r, images: [...r.images, ...newImgs]} : r));
+            };
+
+            return (
+                <div className="max-w-4xl mx-auto space-y-8">
+                    <div className="bg-white p-6 rounded shadow border">
+                        <h3 className="font-bold mb-4">Nuevo Ambiente</h3>
+                        <div className="grid md:grid-cols-2 gap-4">
+                            <div>
+                                <input className="border p-2 rounded w-full" placeholder="Nombre (ej: Cocina, Patio)" value={name} onChange={e=>setName(e.target.value)} />
+                                {isOutdoor && <p className="text-xs text-green-600 mt-1 font-bold">🌲 Detectado como Exterior</p>}
+                            </div>
+                            <div className="grid grid-cols-3 gap-2">
+                                <input className="border p-2 rounded" placeholder="Largo" type="number" value={l} onChange={e=>setL(e.target.value)} />
+                                <input className="border p-2 rounded" placeholder="Ancho" type="number" value={w} onChange={e=>setW(e.target.value)} />
+                                <input className="border p-2 rounded bg-slate-100" placeholder="M2" value={area} readOnly />
+                            </div>
+                            <input className="md:col-span-2 border p-2 rounded" placeholder="Notas (ej: humedad en muros, cerámica rota...)" value={desc} onChange={e=>setDesc(e.target.value)} />
+                        </div>
+                        <button onClick={addRoom} disabled={!name} className="mt-4 bg-slate-800 text-white px-4 py-2 rounded w-full hover:bg-slate-900">Agregar Ambiente</button>
+                    </div>
+
+                    <div className="space-y-4">
+                        {rooms.map(r => (
+                            <div key={r.id} className="bg-white p-6 rounded shadow border-l-4 border-[#8C2C39]">
+                                <h3 className="font-bold flex justify-between items-center">
+                                    <span className="flex items-center gap-2">
+                                        {r.name} 
+                                        {/patio|jardin|jardín|terraza|balcon|balcón|fondo|parque/i.test(r.name) && <ICONS.Home className="w-4 h-4 text-green-600" />}
+                                    </span>
+                                    <span>{r.area} m²</span>
+                                </h3>
+                                <p className="text-sm text-slate-500">{r.description}</p>
+                                <label className="block mt-4 cursor-pointer bg-slate-50 border dashed p-2 text-center rounded text-sm hover:bg-slate-100">
+                                    Subir fotos de {r.name}
+                                    <input type="file" multiple className="hidden" onChange={e => handleFiles(e, r.id)} />
+                                </label>
+                                <div className="flex gap-2 mt-2 overflow-x-auto">
+                                    {r.images.map((img, i) => <img key={i} src={img.data} className="w-16 h-16 object-cover rounded border" />)}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+
+                    <div className="flex justify-end">
+                        <button onClick={onNext} disabled={rooms.length === 0} className="bg-[#8C2C39] text-white px-8 py-3 rounded font-bold hover:bg-[#70232e]">Analizar y Diagnosticar</button>
+                    </div>
+                </div>
+            );
+        };
+
+        const AnalysisView = ({ rooms, setRooms, onGenerate, onBack, loading, globalDecs, onGlobalUpd }) => {
+            const handleDec = (rid, iid, status) => {
+                setRooms(prev => prev.map(r => r.id === rid ? {...r, decisions: {...r.decisions, [iid]: {...r.decisions[iid], status}}} : r));
+            };
+
+            const renderImg = async (rid, idx) => {
+                setRooms(prev => prev.map(r => r.id === rid ? {...r, isRendering: Object.assign([], r.isRendering, {[idx]: true})} : r));
+                const room = rooms.find(r => r.id === rid);
+                const res = await generateRoomRender(room, idx);
+                setRooms(prev => prev.map(r => r.id === rid ? {
+                    ...r, 
+                    generatedImages: Object.assign([], r.generatedImages, {[idx]: res}),
+                    isRendering: Object.assign([], r.isRendering, {[idx]: false})
+                } : r));
+            };
+
+            return (
+                <div className="max-w-5xl mx-auto space-y-12 pb-32">
+                    {rooms.map(r => (
+                        <div key={r.id} className="bg-white rounded shadow-lg overflow-hidden border">
+                            <div className="bg-[#8C2C39] p-4 text-white font-bold flex justify-between">
+                                <span>{r.name}</span>
+                                {r.isAnalyzing && <span className="text-xs bg-white/20 px-2 rounded flex items-center gap-1"><ICONS.Loader className="animate-spin w-3 h-3"/> Analizando...</span>}
+                            </div>
+                            <div className="p-6">
+                                {r.diagnosis?.structuredAnalysis ? (
+                                    <div className="space-y-6">
+                                        <div className="grid md:grid-cols-2 gap-4">
+                                            <div className="bg-slate-50 p-3 rounded text-sm"><strong className="text-[#8C2C39] block mb-1">Diagnóstico General:</strong> {r.diagnosis.structuredAnalysis.generalState}</div>
+                                            <div className="bg-red-50 p-3 rounded text-sm text-red-800"><strong className="block mb-1">Patologías:</strong> {r.diagnosis.structuredAnalysis.pathologies}</div>
+                                        </div>
+
+                                        {/* Global Infra Check */}
+                                        {(r.diagnosis.structuredAnalysis.ageSuggestionElectric && globalDecs.electricity === 'pending') && (
+                                            <div className="bg-amber-50 p-4 border-l-4 border-amber-500 flex justify-between items-center rounded">
+                                                <div className="text-sm text-amber-900">
+                                                    <span className="font-bold block">⚡ INSTALACIÓN ELÉCTRICA (GLOBAL)</span>
+                                                    {r.diagnosis.structuredAnalysis.ageSuggestionElectric}
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => onGlobalUpd('electricity', 'approved')} className="bg-green-600 text-white text-xs font-bold px-3 py-1 rounded hover:bg-green-700">Aprobar Todo</button>
+                                                    <button onClick={() => onGlobalUpd('electricity', 'rejected')} className="bg-red-100 text-red-700 text-xs font-bold px-3 py-1 rounded hover:bg-red-200">Ignorar</button>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Interventions */}
+                                        <div className="border rounded-lg overflow-hidden">
+                                            <div className="bg-slate-100 px-4 py-2 font-bold text-sm text-slate-700">Intervenciones Sugeridas</div>
+                                            {r.diagnosis.structuredAnalysis.interventions?.map(item => {
+                                                const dec = r.decisions[item.id] || {};
+                                                return (
+                                                    <div key={item.id} className="p-4 border-b last:border-0 flex justify-between items-start hover:bg-slate-50">
+                                                        <div>
+                                                            <div className="font-bold text-slate-800">{item.task}</div>
+                                                            <div className="text-sm text-slate-600">{item.materials}</div>
+                                                            <div className="text-xs font-bold text-[#8C2C39] mt-1 bg-[#8C2C39]/10 inline-block px-2 py-0.5 rounded">Impacto: {item.roiJustification}</div>
+                                                        </div>
+                                                        <div className="flex flex-col gap-2 items-end">
+                                                            <div className="flex gap-3">
+                                                                <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={dec.status === 'approved'} onChange={() => handleDec(r.id, item.id, 'approved')} className="accent-green-600"/> <span className="text-sm">Si</span></label>
+                                                                <label className="flex items-center gap-1 cursor-pointer"><input type="checkbox" checked={dec.status === 'rejected'} onChange={() => handleDec(r.id, item.id, 'rejected')} className="accent-red-600"/> <span className="text-sm">No</span></label>
+                                                            </div>
+                                                            <input 
+                                                                placeholder="O escribe un cambio..." 
+                                                                className="text-xs border p-1 rounded w-40" 
+                                                                onChange={(e) => {
+                                                                    handleDec(r.id, item.id, e.target.value ? 'modified' : 'pending');
+                                                                    setRooms(prev => prev.map(room => room.id === r.id ? {
+                                                                        ...room, decisions: {...room.decisions, [item.id]: {...room.decisions[item.id], modificationNote: e.target.value}}
+                                                                    } : room));
+                                                                }}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
+
+                                        {/* Renders */}
+                                        <div className="border-t pt-4">
+                                            <h4 className="font-bold text-sm text-slate-600 mb-2">Visualización IA</h4>
+                                            <div className="grid md:grid-cols-2 gap-4">
+                                                {r.images.map((img, idx) => (
+                                                    <div key={idx} className="border p-2 rounded bg-slate-50">
+                                                        <div className="h-40 bg-slate-200 mb-2 relative rounded overflow-hidden group">
+                                                            <img src={r.generatedImages[idx] || img.data} className="w-full h-full object-cover transition duration-500 group-hover:scale-105" />
+                                                            {r.isRendering[idx] && <div className="absolute inset-0 bg-black/50 text-white flex items-center justify-center backdrop-blur-sm"><ICONS.Loader className="animate-spin mr-2"/> Generando...</div>}
+                                                        </div>
+                                                        <button onClick={() => renderImg(r.id, idx)} disabled={r.isRendering[idx]} className="w-full bg-slate-800 text-white py-1.5 rounded text-xs font-bold hover:bg-slate-900 disabled:opacity-50">
+                                                            {r.generatedImages[idx] ? 'Regenerar Opción' : 'Generar Render Propuesto'}
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ) : <div className="text-center py-10 text-slate-400 italic">Esperando diagnóstico...</div>}
+                            </div>
+                        </div>
+                    ))}
+                    <div className="flex justify-between bg-white p-4 sticky bottom-0 border-t shadow-[0_-5px_15px_rgba(0,0,0,0.1)] z-40">
+                        <button onClick={onBack} className="text-[#8C2C39] font-bold flex items-center gap-2 hover:underline"><ICONS.Plus className="w-4 h-4"/> Agregar otro ambiente</button>
+                        <button onClick={onGenerate} disabled={loading} className="bg-[#8C2C39] text-white px-6 py-3 rounded font-bold shadow hover:bg-[#70232e] disabled:opacity-70 flex items-center gap-2">
+                            {loading ? <ICONS.Loader className="animate-spin w-5 h-5"/> : <ICONS.CheckCircle className="w-5 h-5"/>}
+                            {loading ? 'Generando Reporte...' : 'Finalizar y Generar Plan'}
+                        </button>
+                    </div>
+                </div>
+            );
+        };
+
+        const FinalReport = ({ plan, rooms }) => {
+            const handlePrint = () => {
+                const win = window.open('', '_blank', 'height=800,width=1000');
+                if(!win) { alert("Permite pop-ups"); return; }
+                const content = document.getElementById('printable-content').innerHTML;
+                win.document.write(`
+                    <html><head><title>Informe Técnico</title>
+                    <script src="https://cdn.tailwindcss.com"></` + `script>
+                    <style>
+                        body{padding:40px; font-family: sans-serif; max-width: 800px; mx: auto;} 
+                        h1{color:#8C2C39; border-bottom:2px solid #8C2C39; padding-bottom:10px;} 
+                        h2{color:#8C2C39; margin-top:30px; border-bottom:1px solid #ddd;}
+                        strong{color:#333;}
+                        .break-page{page-break-before: always;}
+                    </style>
+                    </head><body>${content}</body></html>
+                `);
+                win.document.close();
+                setTimeout(() => win.print(), 1000);
+            };
+
+            return (
+                <div className="max-w-5xl mx-auto">
+                    <div className="flex justify-end mb-4">
+                        <button onClick={handlePrint} className="bg-slate-800 text-white px-6 py-3 rounded-full font-bold shadow hover:scale-105 transition flex items-center gap-2">
+                            <ICONS.Download className="w-5 h-5"/> Descargar PDF Oficial
+                        </button>
+                    </div>
+                    <div className="bg-white p-12 shadow-2xl border rounded-xl">
+                        <div className="prose max-w-none prose-headings:text-[#8C2C39] prose-h1:border-b-2 prose-h1:border-[#8C2C39] prose-h1:pb-4">
+                             <ReactMarkdown>{plan}</ReactMarkdown>
+                        </div>
+                        
+                        {/* Visual Gallery Screen */}
+                        <div className="mt-16 pt-10 border-t-4 border-[#8C2C39]">
+                            <h2 className="text-2xl font-bold text-[#8C2C39] mb-6 flex items-center gap-2"><ICONS.Image className="w-6 h-6"/> Galería Visual de Proyecto</h2>
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                                {rooms.map(r => r.generatedImages?.map((g, i) => g && (
+                                    <div key={r.id+i} className="border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+                                        <div className="bg-[#8C2C39] text-white p-2 text-sm font-bold text-center">{r.name}</div>
+                                        <div className="grid grid-cols-2 gap-1 h-48">
+                                            <div className="relative">
+                                                <span className="absolute top-2 left-2 bg-black/50 text-white text-[10px] px-2 py-1 rounded">ACTUAL</span>
+                                                <img src={r.images[i].data} className="w-full h-full object-cover" />
+                                            </div>
+                                            <div className="relative">
+                                                <span className="absolute top-2 left-2 bg-[#8C2C39] text-white text-[10px] px-2 py-1 rounded">PROPUESTA</span>
+                                                <img src={g} className="w-full h-full object-cover" />
+                                            </div>
+                                        </div>
+                                    </div>
+                                )))}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Hidden Print Content (Clean format for PDF) */}
+                    <div id="printable-content" className="hidden">
+                        <div className="max-w-3xl mx-auto text-slate-900">
+                             <div className="border-b-4 border-[#8C2C39] mb-8 pb-4 flex justify-between items-end">
+                                <div>
+                                    <h1 className="text-3xl font-bold m-0 border-0">INFORME TÉCNICO DE OBRA</h1>
+                                    <p className="text-sm text-slate-500 mt-2">Generado por Flipping Master IA</p>
+                                </div>
+                                <div className="text-xs text-slate-400">{new Date().toLocaleDateString()}</div>
+                             </div>
+                             
+                             <div className="prose max-w-none text-justify text-sm">
+                                <ReactMarkdown>{plan}</ReactMarkdown>
+                             </div>
+                             
+                             <div className="break-page mt-10"></div>
+                             
+                             <h2 className="text-xl font-bold text-[#8C2C39] mb-6 pt-10 border-t">Anexo: Visualización de Intervenciones</h2>
+                             <div className="grid grid-cols-2 gap-6">
+                                {rooms.map(r => r.generatedImages?.map((g, i) => g && (
+                                    <div key={r.id+i+'p'} className="border border-slate-300 rounded overflow-hidden mb-4 break-inside-avoid">
+                                        <div className="bg-[#8C2C39] text-white p-2 font-bold text-center text-sm">{r.name}</div>
+                                        <div className="grid grid-cols-2 gap-0">
+                                            <img src={r.images[i].data} className="w-full h-32 object-cover border-r border-slate-300" />
+                                            <img src={g} className="w-full h-32 object-cover" />
+                                        </div>
+                                        <div className="flex justify-between text-[10px] p-1 bg-slate-50 text-slate-500">
+                                            <span>Estado Actual</span>
+                                            <span>Proyecto</span>
+                                        </div>
+                                    </div>
+                                )))}
+                             </div>
+                             <div className="mt-10 text-center text-[10px] text-slate-400 border-t pt-4">
+                                Documento generado automáticamente. Los cómputos y materiales son estimaciones que requieren validación en obra.
+                             </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        // ==========================================
+        // APP PRINCIPAL
+        // ==========================================
+        const App = () => {
+            const [step, setStep] = useState('onboarding');
+            const [prop, setProp] = useState(null);
+            const [rooms, setRooms] = useState([]);
+            const [plan, setPlan] = useState('');
+            const [loading, setLoading] = useState(false);
+            const [globalDecs, setGlobalDecs] = useState({ electricity: 'pending', plumbing: 'pending' });
+
+            const handleAnalyze = async () => {
+                setStep('diagnosis');
+                const newRooms = [...rooms];
+                for (let i = 0; i < newRooms.length; i++) {
+                    if (!newRooms[i].diagnosis) {
+                        setRooms(prev => prev.map(r => r.id === newRooms[i].id ? {...r, isAnalyzing: true} : r));
+                        const diag = await diagnoseRoom(newRooms[i], prop);
+                        setRooms(prev => prev.map(r => r.id === newRooms[i].id ? {...r, isAnalyzing: false, diagnosis: diag} : r));
+                    }
+                }
+            };
+
+            const handlePlan = async () => {
+                setLoading(true);
+                const p = await generateTechnicalPlan(rooms, prop, globalDecs);
+                setPlan(p);
+                setLoading(false);
+                setStep('results');
+            };
+
+            // Fast Forward Demo
+            const handleFF = () => {
+                setProp({ city: 'Demo Palermo', type: 'Depto', areaCovered: '50', areaSemi: '5', areaOpen: '0', age: '40', renovationLevel: 'Standard' });
+                setRooms([{
+                    id: 'demo', name: 'Living Demo', description: 'Demo', images: [], 
+                    diagnosis: { structuredAnalysis: { generalState: 'Bueno', interventions: [{id:'1', task:'Pintura', materials:'Latex', roiJustification:'Alto'}] } },
+                    decisions: {'1':{status:'approved'}}, isAnalyzing: false, isRendering: [], generatedImages: []
+                }]);
+                setPlan('# INFORME DEMO\n\nTodo correcto.');
+                setStep('results');
+            };
+
+            return (
+                <div className="min-h-screen">
+                    <nav className="bg-slate-900 text-white p-4 sticky top-0 z-50 flex items-center gap-2 shadow-md">
+                        <div className="w-8 h-8"><BrandLogo /></div>
+                        <span className="font-bold text-lg tracking-tight">Flipping Master IA</span>
+                    </nav>
+                    <main className="container mx-auto p-4 py-8">
+                        {!API_KEY || API_KEY.includes("PEGAR") ? (
+                            <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded shadow">
+                                <p className="font-bold">⚠️ Falta Configuración</p>
+                                <p>Debes editar este archivo HTML y poner tu API KEY de Google en la línea 56.</p>
+                            </div>
+                        ) : (
+                            <>
+                                {step === 'onboarding' && <Onboarding onComplete={d => {setProp(d); setStep('floorplan');}} onFastForward={handleFF} />}
+                                {step === 'floorplan' && <FloorPlanSelector onComplete={d => {setProp({...prop, ...d}); setStep('rooms');}} />}
+                                {step === 'rooms' && <RoomManager rooms={rooms} setRooms={setRooms} onNext={handleAnalyze} />}
+                                {step === 'diagnosis' && <AnalysisView rooms={rooms} setRooms={setRooms} onGenerate={handlePlan} onBack={() => setStep('rooms')} loading={loading} globalDecs={globalDecs} onGlobalUpd={(t,s)=>setGlobalDecs(prev=>({...prev, [t]: s}))} />}
+                                {step === 'results' && <FinalReport plan={plan} rooms={rooms} />}
+                            </>
+                        )}
+                    </main>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>

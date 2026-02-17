@@ -1,0 +1,8 @@
+{
+  "name": "Flipping Master IA ReModela",
+  "description": "Asistente experto en remodelación y flipping inmobiliario para propiedades en Argentina. Diagnóstico, planificación técnica y visualización fotorrealista.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
